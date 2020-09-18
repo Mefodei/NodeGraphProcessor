@@ -5,6 +5,7 @@ using UnityEngine.UIElements;
 using UnityEditor;
 using System.Reflection;
 using System;
+using System.Collections;
 using System.Linq;
 using UnityEditorInternal;
 
@@ -39,7 +40,7 @@ namespace GraphProcessor
 		public event Action< PortView >			onPortConnected;
 		public event Action< PortView >			onPortDisconnected;
 
-		protected virtual bool					hasSettings => false;
+		protected virtual bool					hasSettings { get; set; }
 
         public bool								initializing = false; //Used for applying SetPosition on locked node at init.
 
@@ -172,7 +173,12 @@ namespace GraphProcessor
 				settings.Add(CreateSettingsView());
 				settingsContainer.Add(settings);
 				Add(settingsContainer);
+				
+				var fields = nodeTarget.GetType().GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly);
 
+				foreach(var field in fields)
+					if(field.GetCustomAttribute(typeof(SettingAttribute)) != null) 
+						AddSettingField(field);
 			}
 		}
 
@@ -305,12 +311,12 @@ namespace GraphProcessor
 			if (p.direction == Direction.Input)
 			{
 				if (inputPortViews.Remove(p))
-					inputContainer.Remove(p);
+					p.RemoveFromHierarchy();
 			}
 			else
 			{
 				if (outputPortViews.Remove(p))
-					outputContainer.Remove(p);
+					p.RemoveFromHierarchy();
 			}
 
 			List< PortView > ports;
@@ -554,6 +560,13 @@ namespace GraphProcessor
 
 			foreach (var field in fields)
 			{
+				//skip if the field is a node setting
+				if(field.GetCustomAttribute(typeof(SettingAttribute)) != null)
+				{
+					hasSettings = true;
+					continue;
+				}
+				
 				//skip if the field is not serializable
 				if(!field.IsPublic && field.GetCustomAttribute(typeof(SerializeField)) == null)
 				{
@@ -590,6 +603,7 @@ namespace GraphProcessor
 				var showInputDrawer = field.GetCustomAttribute(typeof(InputAttribute)) != null && field.GetCustomAttribute(typeof(SerializeField)) != null;
 				showInputDrawer |= field.GetCustomAttribute(typeof(InputAttribute)) != null && field.GetCustomAttribute(typeof(ShowAsDrawer)) != null;
 				showInputDrawer &= !fromInspector; // We can't show a drawer in the inspector
+				showInputDrawer &= typeof(IEnumerable).IsAssignableFrom(field.FieldType);
 
 				var elem = AddControlField(field, ObjectNames.NicifyVariableName(field.Name), showInputDrawer);
 				if (hasInputAttribute)
@@ -733,6 +747,25 @@ namespace GraphProcessor
 		{
 			foreach (var kp in fieldControlsMap)
 				UpdateOtherFieldValue(kp.Key, kp.Key.GetValue(nodeTarget));
+		}
+		
+		protected void AddSettingField(FieldInfo field)
+		{
+			if (field == null)
+				return;
+
+			var label = field.GetCustomAttribute<SettingAttribute>().name;
+
+			var element = FieldFactory.CreateField(field.FieldType, field.GetValue(nodeTarget), (newValue) => {
+				owner.RegisterCompleteObjectUndo("Updated " + newValue);
+				field.SetValue(nodeTarget, newValue);
+			}, label);
+
+			if(element != null)
+			{
+				settingsContainer.Add(element);
+				element.name = field.Name;
+			}
 		}
 
 		internal void OnPortConnected(PortView port)
@@ -918,7 +951,7 @@ namespace GraphProcessor
 		// 	}
 		// }
 
-		public new bool RefreshPorts()
+		public virtual new bool RefreshPorts()
 		{
 			// If a port behavior was attached to one port, then
 			// the port count might have been updated by the node
@@ -957,7 +990,7 @@ namespace GraphProcessor
 			return base.RefreshPorts();
 		}
 
-		protected void ForceUpdatePorts()
+		public void ForceUpdatePorts()
 		{
 			nodeTarget.UpdateAllPorts();
 
@@ -970,7 +1003,7 @@ namespace GraphProcessor
 			RefreshPorts();
 		}
 
-		protected virtual VisualElement CreateSettingsView() => new Label("Settings");
+		protected virtual VisualElement CreateSettingsView() => new Label("Settings") {name = "header"};
 
 		/// <summary>
 		/// Send an event to the graph telling that the content of this node have changed
